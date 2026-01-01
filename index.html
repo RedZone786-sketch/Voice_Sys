@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        body { margin:0; background:transparent; overflow:hidden; display:flex; align-items:center; justify-content:center; height:100vh; }
+        #mic { width:80px; height:80px; border-radius:50%; background:#ff2d2d; display:flex; align-items:center; justify-content:center; font-size:30px; box-shadow:0 0 15px red; color:white; cursor:pointer; -webkit-tap-highlight-color:transparent; transition:0.3s; }
+        .active { background:#00ff55 !important; box-shadow:0 0 30px #00ff55 !important; }
+    </style>
+</head>
+<body>
+    <div id="mic" ontouchstart="toggleMic(true)" ontouchend="toggleMic(false)">🎤</div>
+
+    <script>
+        let myPeer;
+        let localStream;
+        const connectedCalls = {};
+
+        // 1. Sketchware se UID aane par Peer start hoga
+        window.initVoice = async (myUid) => {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                localStream.getAudioTracks()[0].enabled = false; // Default Mute
+
+                // PeerJS initialization with Firebase UID
+                myPeer = new Peer(myUid, {
+                    config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }] }
+                });
+
+                myPeer.on('call', (call) => {
+                    call.answer(localStream);
+                    setupStream(call);
+                });
+
+                AndroidBridge.log("Voice Engine Ready: " + myUid);
+            } catch (e) {
+                AndroidBridge.log("Mic Error: " + e);
+            }
+        };
+
+        // 2. Sketchware jab bolega tab dusre user ko call karega
+        window.connectToUser = (remoteUid) => {
+            if (!myPeer || connectedCalls[remoteUid]) return;
+            const call = myPeer.call(remoteUid, localStream);
+            setupStream(call);
+            connectedCalls[remoteUid] = call;
+            AndroidBridge.log("Connecting to: " + remoteUid);
+        };
+
+        function setupStream(call) {
+            call.on('stream', (remoteStream) => {
+                const audio = new Audio();
+                audio.srcObject = remoteStream;
+                audio.play();
+                AndroidBridge.log("Streaming Audio...");
+            });
+        }
+
+        function toggleMic(on) {
+            if(localStream) localStream.getAudioTracks()[0].enabled = on;
+            document.getElementById('mic').className = on ? 'active' : '';
+            if(on) {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                if(ctx.state === 'suspended') ctx.resume();
+            }
+        }
+    </script>
+</body>
+</html>
+
