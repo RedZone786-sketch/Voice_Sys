@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8" />
-    <title>Advanced Voice Engine</title>
+    <title>Royal Voice Engine</title>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
 </head>
@@ -13,20 +13,16 @@
         const peers = {};
         const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-        // Advanced Constraints for Vocal Focus & Noise Cancellation
+        // Advanced Constraints for Vocal Isolation
         const audioConstraints = {
             audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
-                // Google-specific constraints for Android WebViews
-                googEchoCancellation: true,
-                googAutoGainControl: true,
+                googHighpassFilter: true,
                 googNoiseSuppression: true,
-                googHighpassFilter: true, 
-                googTypingNoiseDetection: true,
-                channelCount: 1,
-                sampleRate: 44100
+                googEchoCancellation: true,
+                channelCount: 1
             }
         };
 
@@ -37,22 +33,26 @@
                 myUid = uid;
                 setupIncomingListener();
                 startLocalStream();
-            } catch(e) { if(window.AndroidBridge) AndroidBridge.log("Init Error"); }
+            } catch(e) { console.error(e); }
+        };
+
+        window.stopVoice = function() {
+            if (localStream) {
+                localStream.getTracks().forEach(t => t.stop());
+                localStream = null;
+            }
+            for (let id in peers) { peers[id].close(); delete peers[id]; }
+            document.getElementById('remote-audios').innerHTML = "";
         };
 
         window.toggleMic = function(isMuted) {
-            if (localStream && localStream.getAudioTracks()[0]) {
-                localStream.getAudioTracks()[0].enabled = !isMuted;
-            }
+            if (localStream) localStream.getAudioTracks()[0].enabled = !isMuted;
         };
 
         async function startLocalStream() {
             try {
                 localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
-                if(window.AndroidBridge) AndroidBridge.log("Noise Cancellation Enabled");
-            } catch (e) { 
-                if(window.AndroidBridge) AndroidBridge.log("Mic Permission Denied"); 
-            }
+            } catch (e) { if(window.AndroidBridge) AndroidBridge.log("Mic Permission Error"); }
         }
 
         function setupIncomingListener() {
@@ -82,26 +82,15 @@
             const pc = new RTCPeerConnection(iceServers);
             peers[remoteUid] = pc;
             if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-            
             pc.ontrack = (e) => {
-                let a = document.getElementById(`audio-${remoteUid}`) || document.createElement('audio');
-                a.id = `audio-${remoteUid}`; a.autoplay = true; a.srcObject = e.streams[0];
-                // Set volume boost for clear voice
-                a.volume = 1.0;
+                let a = document.createElement('audio'); a.autoplay = true; a.srcObject = e.streams[0];
                 document.getElementById('remote-audios').appendChild(a);
             };
-
-            pc.onicecandidate = (e) => { 
-                if (e.candidate) database.ref(`voiceIce/${remoteUid}/${myUid}`).push(e.candidate.toJSON()); 
-            };
-
+            pc.onicecandidate = (e) => { if (e.candidate) database.ref(`voiceIce/${remoteUid}/${myUid}`).push(e.candidate.toJSON()); };
             database.ref(`voiceIce/${myUid}/${remoteUid}`).on('child_added', s => pc.addIceCandidate(new RTCIceCandidate(s.val())));
-            
             database.ref(`voiceSignaling/${myUid}`).on('child_added', async (s) => {
-                const d = s.val(); 
-                if (d.type === 'answer' && d.from === remoteUid) {
-                    await pc.setRemoteDescription(new RTCSessionDescription(d.answer)); 
-                    s.ref.remove();
+                const d = s.val(); if (d.type === 'answer' && d.from === remoteUid) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(d.answer)); s.ref.remove();
                 }
             });
             return pc;
