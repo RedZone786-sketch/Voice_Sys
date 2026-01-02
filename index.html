@@ -13,7 +13,6 @@
         const peers = {};
         const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-        // Advanced Constraints for Vocal Isolation
         const audioConstraints = {
             audio: {
                 echoCancellation: true,
@@ -22,7 +21,7 @@
                 googHighpassFilter: true,
                 googNoiseSuppression: true,
                 googEchoCancellation: true,
-                channelCount: 1
+                googAutoGainControl: true
             }
         };
 
@@ -33,7 +32,7 @@
                 myUid = uid;
                 setupIncomingListener();
                 startLocalStream();
-            } catch(e) { console.error(e); }
+            } catch(e) { if(window.AndroidBridge) AndroidBridge.log("Bridge Error: " + e.message); }
         };
 
         window.stopVoice = function() {
@@ -43,22 +42,27 @@
             }
             for (let id in peers) { peers[id].close(); delete peers[id]; }
             document.getElementById('remote-audios').innerHTML = "";
+            if(window.AndroidBridge) AndroidBridge.log("Voice Stopped");
         };
 
         window.toggleMic = function(isMuted) {
-            if (localStream) localStream.getAudioTracks()[0].enabled = !isMuted;
+            if (localStream) {
+                localStream.getAudioTracks()[0].enabled = !isMuted;
+                if(window.AndroidBridge) AndroidBridge.log(isMuted ? "Mic Off" : "Mic On");
+            }
         };
 
         async function startLocalStream() {
             try {
                 localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+                if(window.AndroidBridge) AndroidBridge.log("Vocal Filter Active");
             } catch (e) { if(window.AndroidBridge) AndroidBridge.log("Mic Permission Error"); }
         }
 
         function setupIncomingListener() {
             database.ref(`voiceSignaling/${myUid}`).on('child_added', async (snap) => {
                 const data = snap.val();
-                if (data.type === 'offer') { handleOffer(data.offer, data.from); snap.ref.remove(); }
+                if (data && data.type === 'offer') { handleOffer(data.offer, data.from); snap.ref.remove(); }
             });
         }
 
@@ -89,7 +93,7 @@
             pc.onicecandidate = (e) => { if (e.candidate) database.ref(`voiceIce/${remoteUid}/${myUid}`).push(e.candidate.toJSON()); };
             database.ref(`voiceIce/${myUid}/${remoteUid}`).on('child_added', s => pc.addIceCandidate(new RTCIceCandidate(s.val())));
             database.ref(`voiceSignaling/${myUid}`).on('child_added', async (s) => {
-                const d = s.val(); if (d.type === 'answer' && d.from === remoteUid) {
+                const d = s.val(); if (d && d.type === 'answer' && d.from === remoteUid) {
                     await pc.setRemoteDescription(new RTCSessionDescription(d.answer)); s.ref.remove();
                 }
             });
