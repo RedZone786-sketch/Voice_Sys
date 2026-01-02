@@ -2,31 +2,29 @@
 <html>
 <head>
     <meta charset="UTF-8" />
-    <title>Clean Voice Engine</title>
+    <title>Advanced Voice Engine</title>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
-    <style>
-        body { background: #000; color: #2ea043; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-        #status { font-size: 12px; text-align: center; color: #00ff00; }
-    </style>
 </head>
-<body>
-    <div id="status">FILTERING ACTIVE: NOISE CANCELLATION ON</div>
+<body style="background:transparent; margin:0; overflow:hidden;">
     <div id="remote-audios"></div>
-
     <script>
-        let database;
-        let myUid;
-        let localStream;
+        let database, myUid, localStream;
         const peers = {};
         const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-        // Optimized Audio Constraints for Noise Cancellation
+        // Advanced Constraints for Vocal Focus & Noise Cancellation
         const audioConstraints = {
             audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
                 autoGainControl: true,
+                // Google-specific constraints for Android WebViews
+                googEchoCancellation: true,
+                googAutoGainControl: true,
+                googNoiseSuppression: true,
+                googHighpassFilter: true, 
+                googTypingNoiseDetection: true,
                 channelCount: 1,
                 sampleRate: 44100
             }
@@ -39,26 +37,28 @@
                 myUid = uid;
                 setupIncomingListener();
                 startLocalStream();
-            } catch (e) { console.error(e); }
+            } catch(e) { if(window.AndroidBridge) AndroidBridge.log("Init Error"); }
+        };
+
+        window.toggleMic = function(isMuted) {
+            if (localStream && localStream.getAudioTracks()[0]) {
+                localStream.getAudioTracks()[0].enabled = !isMuted;
+            }
         };
 
         async function startLocalStream() {
             try {
-                // Requesting stream with Noise Cancellation constraints
                 localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
-                if(window.AndroidBridge) AndroidBridge.log("Mic Active (Noise Cancel On)");
-            } catch (e) {
-                if(window.AndroidBridge) AndroidBridge.log("Mic Error: " + e.message);
+                if(window.AndroidBridge) AndroidBridge.log("Noise Cancellation Enabled");
+            } catch (e) { 
+                if(window.AndroidBridge) AndroidBridge.log("Mic Permission Denied"); 
             }
         }
 
         function setupIncomingListener() {
-            database.ref(`voiceSignaling/${myUid}`).on('child_added', async (snapshot) => {
-                const data = snapshot.val();
-                if (data.type === 'offer') {
-                    handleOffer(data.offer, data.from);
-                    snapshot.ref.remove();
-                }
+            database.ref(`voiceSignaling/${myUid}`).on('child_added', async (snap) => {
+                const data = snap.val();
+                if (data.type === 'offer') { handleOffer(data.offer, data.from); snap.ref.remove(); }
             });
         }
 
@@ -82,29 +82,28 @@
             const pc = new RTCPeerConnection(iceServers);
             peers[remoteUid] = pc;
             if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-
+            
             pc.ontrack = (e) => {
-                let audio = document.getElementById(`audio-${remoteUid}`) || document.createElement('audio');
-                audio.id = `audio-${remoteUid}`;
-                audio.autoplay = true;
-                audio.srcObject = e.streams[0];
-                document.getElementById('remote-audios').appendChild(audio);
+                let a = document.getElementById(`audio-${remoteUid}`) || document.createElement('audio');
+                a.id = `audio-${remoteUid}`; a.autoplay = true; a.srcObject = e.streams[0];
+                // Set volume boost for clear voice
+                a.volume = 1.0;
+                document.getElementById('remote-audios').appendChild(a);
             };
 
-            pc.onicecandidate = (e) => {
-                if (e.candidate) database.ref(`voiceIce/${remoteUid}/${myUid}`).push(e.candidate.toJSON());
+            pc.onicecandidate = (e) => { 
+                if (e.candidate) database.ref(`voiceIce/${remoteUid}/${myUid}`).push(e.candidate.toJSON()); 
             };
 
             database.ref(`voiceIce/${myUid}/${remoteUid}`).on('child_added', s => pc.addIceCandidate(new RTCIceCandidate(s.val())));
             
             database.ref(`voiceSignaling/${myUid}`).on('child_added', async (s) => {
-                const d = s.val();
+                const d = s.val(); 
                 if (d.type === 'answer' && d.from === remoteUid) {
-                    await pc.setRemoteDescription(new RTCSessionDescription(d.answer));
+                    await pc.setRemoteDescription(new RTCSessionDescription(d.answer)); 
                     s.ref.remove();
                 }
             });
-
             return pc;
         }
     </script>
