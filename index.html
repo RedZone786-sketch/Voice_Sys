@@ -2,20 +2,16 @@
 <html>
 <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Voice Engine</title>
+    <title>Clean Voice Engine</title>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
     <style>
-        body { background: #000; color: #2ea043; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
-        #status { font-size: 14px; text-align: center; padding: 20px; border: 1px dashed #2ea043; border-radius: 10px; width: 80%; }
-        .pulse { animation: blink 1s infinite; }
-        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+        body { background: #000; color: #2ea043; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; }
+        #status { font-size: 12px; text-align: center; color: #00ff00; }
     </style>
 </head>
 <body>
-
-    <div id="status">INITIALIZING VOICE ENGINE...</div>
+    <div id="status">FILTERING ACTIVE: NOISE CANCELLATION ON</div>
     <div id="remote-audios"></div>
 
     <script>
@@ -25,62 +21,53 @@
         const peers = {};
         const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-        // 1. Initialize from Android
+        // Optimized Audio Constraints for Noise Cancellation
+        const audioConstraints = {
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+                channelCount: 1,
+                sampleRate: 44100
+            }
+        };
+
         window.initVoice = function(configStr, uid) {
             try {
-                const config = JSON.parse(configStr);
-                firebase.initializeApp(config);
+                firebase.initializeApp(JSON.parse(configStr));
                 database = firebase.database();
                 myUid = uid;
-                
-                document.getElementById('status').innerHTML = "READY: " + uid + "<br><span class='pulse'>LISTENING FOR INCOMING...</span>";
-                
                 setupIncomingListener();
                 startLocalStream();
-                if(window.AndroidBridge) AndroidBridge.log("Voice Engine Ready: " + uid);
-            } catch (e) {
-                document.getElementById('status').innerText = "INIT ERROR: " + e.message;
-            }
+            } catch (e) { console.error(e); }
         };
 
         async function startLocalStream() {
             try {
-                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                if(window.AndroidBridge) AndroidBridge.log("Microphone Accessed");
+                // Requesting stream with Noise Cancellation constraints
+                localStream = await navigator.mediaDevices.getUserMedia(audioConstraints);
+                if(window.AndroidBridge) AndroidBridge.log("Mic Active (Noise Cancel On)");
             } catch (e) {
                 if(window.AndroidBridge) AndroidBridge.log("Mic Error: " + e.message);
             }
         }
 
-        // 2. Listen for others calling ME
         function setupIncomingListener() {
-            const myInbox = database.ref(`voiceSignaling/${myUid}`);
-            myInbox.on('child_added', async (snapshot) => {
+            database.ref(`voiceSignaling/${myUid}`).on('child_added', async (snapshot) => {
                 const data = snapshot.val();
-                const fromUid = data.from;
-
                 if (data.type === 'offer') {
-                    handleOffer(data.offer, fromUid);
-                    myInbox.child(snapshot.key).remove();
+                    handleOffer(data.offer, data.from);
+                    snapshot.ref.remove();
                 }
             });
         }
 
-        // 3. Connect to someone (Triggered by Android)
         window.connectToUser = async function(remoteUid) {
-            if (peers[remoteUid]) return; // Already connected
-            
+            if (peers[remoteUid]) return;
             const pc = createPeerConnection(remoteUid);
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-
-            database.ref(`voiceSignaling/${remoteUid}`).push({
-                type: 'offer',
-                from: myUid,
-                offer: { sdp: offer.sdp, type: offer.type }
-            });
-            
-            document.getElementById('status').innerHTML = "Calling: " + remoteUid;
+            database.ref(`voiceSignaling/${remoteUid}`).push({ type: 'offer', from: myUid, offer: offer });
         };
 
         async function handleOffer(offer, remoteUid) {
@@ -88,54 +75,33 @@
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-
-            database.ref(`voiceSignaling/${remoteUid}`).push({
-                type: 'answer',
-                from: myUid,
-                answer: { sdp: answer.sdp, type: answer.type }
-            });
+            database.ref(`voiceSignaling/${remoteUid}`).push({ type: 'answer', from: myUid, answer: answer });
         }
 
-        // Logic to handle answers
         function createPeerConnection(remoteUid) {
             const pc = new RTCPeerConnection(iceServers);
             peers[remoteUid] = pc;
+            if (localStream) localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
 
-            if (localStream) {
-                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
-            }
-
-            pc.ontrack = (event) => {
-                let audio = document.getElementById(`audio-${remoteUid}`);
-                if (!audio) {
-                    audio = document.createElement('audio');
-                    audio.id = `audio-${remoteUid}`;
-                    audio.autoplay = true;
-                    audio.playsinline = true;
-                    document.getElementById('remote-audios').appendChild(audio);
-                }
-                audio.srcObject = event.streams[0];
-                document.getElementById('status').innerHTML = "CONNECTED TO USERS";
+            pc.ontrack = (e) => {
+                let audio = document.getElementById(`audio-${remoteUid}`) || document.createElement('audio');
+                audio.id = `audio-${remoteUid}`;
+                audio.autoplay = true;
+                audio.srcObject = e.streams[0];
+                document.getElementById('remote-audios').appendChild(audio);
             };
 
-            // ICE Candidates
-            pc.onicecandidate = (event) => {
-                if (event.candidate) {
-                    database.ref(`voiceIce/${remoteUid}/${myUid}`).push(event.candidate.toJSON());
-                }
+            pc.onicecandidate = (e) => {
+                if (e.candidate) database.ref(`voiceIce/${remoteUid}/${myUid}`).push(e.candidate.toJSON());
             };
 
-            // Listen for Remote ICE
-            database.ref(`voiceIce/${myUid}/${remoteUid}`).on('child_added', snap => {
-                pc.addIceCandidate(new RTCIceCandidate(snap.val()));
-            });
-
-            // Listen for Answer
-            database.ref(`voiceSignaling/${myUid}`).on('child_added', async (snapshot) => {
-                const data = snapshot.val();
-                if (data.type === 'answer' && data.from === remoteUid) {
-                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-                    database.ref(`voiceSignaling/${myUid}`).child(snapshot.key).remove();
+            database.ref(`voiceIce/${myUid}/${remoteUid}`).on('child_added', s => pc.addIceCandidate(new RTCIceCandidate(s.val())));
+            
+            database.ref(`voiceSignaling/${myUid}`).on('child_added', async (s) => {
+                const d = s.val();
+                if (d.type === 'answer' && d.from === remoteUid) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(d.answer));
+                    s.ref.remove();
                 }
             });
 
