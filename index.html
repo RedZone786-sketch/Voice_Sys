@@ -1,174 +1,147 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8" />
-  <title>Mic Voice Chat</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
-  <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
-  <style>
-    body {
-      background: #0d1117;
-      color: white;
-      font-family: sans-serif;
-      text-align: center;
-      padding: 30px;
-    }
-    input, button {
-      padding: 10px;
-      margin: 10px;
-      border-radius: 8px;
-      border: none;
-      font-size: 16px;
-    }
-    input {
-      width: 200px;
-      background: #161b22;
-      color: white;
-      border: 1px solid #30363d;
-    }
-    button {
-      cursor: pointer;
-      background: #2ea043;
-      color: white;
-    }
-    #micStatus.active {
-      color: lime;
-      font-weight: bold;
-    }
-    #micStatus.error {
-      color: red;
-    }
-  </style>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Engine</title>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-database-compat.js"></script>
+    <style>
+        body { background: #000; color: #2ea043; font-family: monospace; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; overflow: hidden; }
+        #status { font-size: 14px; text-align: center; padding: 20px; border: 1px dashed #2ea043; border-radius: 10px; width: 80%; }
+        .pulse { animation: blink 1s infinite; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+    </style>
 </head>
 <body>
 
-  <h2>🎤 Voice Chat Room</h2>
-  <input type="text" id="roomInput" placeholder="Room ID" />
-  <br />
-  <button onclick="createMicRoom()">Create Room</button>
-  <button onclick="joinMicRoom()">Join Room</button>
-  <br />
-  <button onclick="toggleMute()" id="muteBtn">🔇 Mute</button>
-  <p id="micStatus">Mic: Inactive</p>
+    <div id="status">INITIALIZING VOICE ENGINE...</div>
+    <div id="remote-audios"></div>
 
-  <audio id="remoteAudio" autoplay playsinline></audio>
+    <script>
+        let database;
+        let myUid;
+        let localStream;
+        const peers = {};
+        const iceServers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
 
-  <script>
-    // Firebase Config
-    const firebaseConfig = {
-      apiKey: "AIzaSyAa4PBgmsvy7ffmAEWV4ZtFPI5KpWKsSBk",
-      authDomain: "bgmi-turnament-c8007.firebaseapp.com",
-      databaseURL: "https://bgmi-turnament-c8007-default-rtdb.asia-southeast1.firebasedatabase.app",
-      projectId: "bgmi-turnament-c8007",
-      storageBucket: "bgmi-turnament-c8007.appspot.com",
-      messagingSenderId: "136711794362",
-      appId: "1:136711794362:web:bc9c719846a97449fa5c83"
-    };
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
-
-    const micStatus = document.getElementById("micStatus");
-    const remoteAudio = document.getElementById("remoteAudio");
-    const remoteStream = new MediaStream();
-    remoteAudio.srcObject = remoteStream;
-
-    let localStream, peerConnection;
-    const servers = { iceServers: [{ urls: "stun:stun.l.google.com:19302" }] };
-    const constraints = { audio: true, video: false };
-    let isMuted = false;
-    let roomId;
-
-    function toggleMute() {
-      if (!localStream) return;
-      isMuted = !isMuted;
-      localStream.getAudioTracks()[0].enabled = !isMuted;
-      document.getElementById("muteBtn").textContent = isMuted ? "🔊 Unmute" : "🔇 Mute";
-    }
-
-    async function createMicRoom() {
-      roomId = document.getElementById("roomInput").value.trim();
-      if (!roomId) return alert("Enter Room ID");
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        peerConnection = new RTCPeerConnection(servers);
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-        peerConnection.ontrack = e => remoteStream.addTrack(e.track);
-
-        const roomRef = db.ref(`micRooms/${roomId}`);
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        await roomRef.set({ offer });
-
-        peerConnection.onicecandidate = e => {
-          if (e.candidate) {
-            db.ref(`micRooms/${roomId}/candidates`).push(e.candidate.toJSON());
-          }
+        // 1. Initialize from Android
+        window.initVoice = function(configStr, uid) {
+            try {
+                const config = JSON.parse(configStr);
+                firebase.initializeApp(config);
+                database = firebase.database();
+                myUid = uid;
+                
+                document.getElementById('status').innerHTML = "READY: " + uid + "<br><span class='pulse'>LISTENING FOR INCOMING...</span>";
+                
+                setupIncomingListener();
+                startLocalStream();
+                if(window.AndroidBridge) AndroidBridge.log("Voice Engine Ready: " + uid);
+            } catch (e) {
+                document.getElementById('status').innerText = "INIT ERROR: " + e.message;
+            }
         };
 
-        roomRef.on("value", async snap => {
-          const data = snap.val();
-          if (data?.answer && !peerConnection.currentRemoteDescription) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-          }
-        });
+        async function startLocalStream() {
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                if(window.AndroidBridge) AndroidBridge.log("Microphone Accessed");
+            } catch (e) {
+                if(window.AndroidBridge) AndroidBridge.log("Mic Error: " + e.message);
+            }
+        }
 
-        db.ref(`micRooms/${roomId}/candidates`).on("child_added", async snap => {
-          const candidate = new RTCIceCandidate(snap.val());
-          await peerConnection.addIceCandidate(candidate);
-        });
+        // 2. Listen for others calling ME
+        function setupIncomingListener() {
+            const myInbox = database.ref(`voiceSignaling/${myUid}`);
+            myInbox.on('child_added', async (snapshot) => {
+                const data = snapshot.val();
+                const fromUid = data.from;
 
-        micStatus.textContent = "Mic: Active";
-        micStatus.className = "active";
-      } catch (e) {
-        micStatus.textContent = "Mic: Error";
-        micStatus.className = "error";
-        console.error(e);
-      }
-    }
+                if (data.type === 'offer') {
+                    handleOffer(data.offer, fromUid);
+                    myInbox.child(snapshot.key).remove();
+                }
+            });
+        }
 
-    async function joinMicRoom() {
-      roomId = document.getElementById("roomInput").value.trim();
-      if (!roomId) return alert("Enter Room ID");
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        peerConnection = new RTCPeerConnection(servers);
-        localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
-        peerConnection.ontrack = e => remoteStream.addTrack(e.track);
+        // 3. Connect to someone (Triggered by Android)
+        window.connectToUser = async function(remoteUid) {
+            if (peers[remoteUid]) return; // Already connected
+            
+            const pc = createPeerConnection(remoteUid);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
 
-        const roomRef = db.ref(`micRooms/${roomId}`);
-        const snap = await roomRef.get();
-        const offer = snap.val().offer;
-        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        await roomRef.update({ answer });
-
-        peerConnection.onicecandidate = e => {
-          if (e.candidate) {
-            db.ref(`micRooms/${roomId}/candidates`).push(e.candidate.toJSON());
-          }
+            database.ref(`voiceSignaling/${remoteUid}`).push({
+                type: 'offer',
+                from: myUid,
+                offer: { sdp: offer.sdp, type: offer.type }
+            });
+            
+            document.getElementById('status').innerHTML = "Calling: " + remoteUid;
         };
 
-        db.ref(`micRooms/${roomId}/candidates`).on("child_added", async snap => {
-          const candidate = new RTCIceCandidate(snap.val());
-          await peerConnection.addIceCandidate(candidate);
-        });
+        async function handleOffer(offer, remoteUid) {
+            const pc = createPeerConnection(remoteUid);
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
 
-        micStatus.textContent = "Mic: Active";
-        micStatus.className = "active";
-      } catch (e) {
-        micStatus.textContent = "Mic: Error";
-        micStatus.className = "error";
-        console.error(e);
-      }
-    }
+            database.ref(`voiceSignaling/${remoteUid}`).push({
+                type: 'answer',
+                from: myUid,
+                answer: { sdp: answer.sdp, type: answer.type }
+            });
+        }
 
-    window.addEventListener("beforeunload", () => {
-      if (localStream) localStream.getTracks().forEach(track => track.stop());
-      if (roomId) db.ref(`micRooms/${roomId}`).remove();
-    });
-  </script>
+        // Logic to handle answers
+        function createPeerConnection(remoteUid) {
+            const pc = new RTCPeerConnection(iceServers);
+            peers[remoteUid] = pc;
+
+            if (localStream) {
+                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+            }
+
+            pc.ontrack = (event) => {
+                let audio = document.getElementById(`audio-${remoteUid}`);
+                if (!audio) {
+                    audio = document.createElement('audio');
+                    audio.id = `audio-${remoteUid}`;
+                    audio.autoplay = true;
+                    audio.playsinline = true;
+                    document.getElementById('remote-audios').appendChild(audio);
+                }
+                audio.srcObject = event.streams[0];
+                document.getElementById('status').innerHTML = "CONNECTED TO USERS";
+            };
+
+            // ICE Candidates
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    database.ref(`voiceIce/${remoteUid}/${myUid}`).push(event.candidate.toJSON());
+                }
+            };
+
+            // Listen for Remote ICE
+            database.ref(`voiceIce/${myUid}/${remoteUid}`).on('child_added', snap => {
+                pc.addIceCandidate(new RTCIceCandidate(snap.val()));
+            });
+
+            // Listen for Answer
+            database.ref(`voiceSignaling/${myUid}`).on('child_added', async (snapshot) => {
+                const data = snapshot.val();
+                if (data.type === 'answer' && data.from === remoteUid) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    database.ref(`voiceSignaling/${myUid}`).child(snapshot.key).remove();
+                }
+            });
+
+            return pc;
+        }
+    </script>
 </body>
 </html>
+
